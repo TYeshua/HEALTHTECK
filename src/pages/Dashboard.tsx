@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, Fragment } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Activity,
@@ -11,26 +11,32 @@ import {
   TrendingUp,
   AlertTriangle,
   UserCheck,
+  X,
+  LogOut, // 1. NOVO: Ícone de Logout
 } from "lucide-react";
+import { useNavigate } from "react-router-dom"; // 2. NOVO: Para redirecionar no logout
 
-// --- CORREÇÃO ---
-// Alterando os caminhos de alias (@/) para caminhos relativos (../)
-// com base na sua estrutura de pastas (src/pages/ e src/components/).
-
+// --- Importações de Componentes ---
+// CORREÇÃO: A usar caminhos relativos (../) em vez de aliases (@/)
 import { Header } from "../components/Header";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
+import { Input } from "../components/ui/input";
+import { Label } from "../components/ui/label";
+
+// 3. NOVO: Importar o AuthContext (com caminho relativo)
+import { useAuth } from "../components/Auth";
 
 // --- Definição de Tipos (Espelhando o Backend api.py) ---
+// ... (O restante do código permanece o mesmo) ...
+// ... permanecem as mesmas da nossa versão anterior)
 
-// Sugestão de Diagnóstico da IA
 interface DiagnosisSuggestion {
   disease: string;
   probability: number;
 }
 
-// Paciente na Fila de Espera
 interface PatientInQueue {
   ticket: string;
   name: string;
@@ -40,14 +46,18 @@ interface PatientInQueue {
   complaint: string;
   wait_time_minutes: number;
   ai_suggestions: DiagnosisSuggestion[];
+  arrival_time: string;
 }
 
-// Estatísticas do Dashboard
 interface DashboardStats {
   total_in_queue: number;
   emergency_count: number;
   avg_wait_time_minutes: number;
   last_hour_count: number;
+}
+
+interface ResolveData {
+  final_diagnosis: string;
 }
 
 // Estilos dos Cards de Prioridade
@@ -63,13 +73,13 @@ const priorityStyles: {
   LARANJA: {
     border: "border-warning",
     bg: "bg-warning/10",
-    text: "text-warning-foreground", // Corrigido para foreground para melhor contraste
+    text: "text-warning-foreground", // Ajustado para warning-foreground
     icon: <AlertTriangle className="h-6 w-6" />,
   },
   AMARELO: {
     border: "border-yellow-500",
     bg: "bg-yellow-500/10",
-    text: "text-yellow-600", // Tom escuro de amarelo para legibilidade
+    text: "text-yellow-600",
     icon: <Clock className="h-6 w-6" />,
   },
   VERDE: {
@@ -86,7 +96,7 @@ const priorityStyles: {
   },
 };
 
-// URL Base da API (Ajuste se o seu backend rodar em outra porta)
+// URL Base da API
 const API_URL = "http://127.0.0.1:8000";
 
 // --- Componente Principal do Dashboard ---
@@ -103,21 +113,46 @@ export default function Dashboard() {
   const [isPolling, setIsPolling] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Função para buscar dados (pacientes e estatísticas)
+  // --- Estados do Modal de Diagnóstico ---
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [currentPatient, setCurrentPatient] = useState<PatientInQueue | null>(null);
+  const [finalDiagnosis, setFinalDiagnosis] = useState("");
+  const [modalError, setModalError] = useState<string | null>(null);
+
+  // 4. NOVO: Obter o token e a função logout do AuthContext
+  const { token, logout } = useAuth();
+  const navigate = useNavigate();
+
+  // Função para lidar com erros de autenticação (Token expirado)
+  const handleAuthError = () => {
+    setError("Sessão expirada. Por favor, faça login novamente.");
+    logout();
+    navigate("/login");
+  };
+
+  // 5. ATUALIZADO: Função para buscar dados (agora envia o token)
   const fetchData = useCallback(async (isInitialLoad = false) => {
-    if (!isInitialLoad && isPolling) return;
+    if ((!isInitialLoad && isPolling) || !token) return; // Não faz nada se não houver token
     
-    if (isInitialLoad) {
-      setIsLoading(true);
-    } else {
-      setIsPolling(true);
-    }
+    if (isInitialLoad) setIsLoading(true);
+    else setIsPolling(true);
+
+    // 6. NOVO: Headers de autorização
+    const headers = {
+      'Authorization': `Bearer ${token}`
+    };
 
     try {
       const [patientsResponse, statsResponse] = await Promise.all([
-        fetch(`${API_URL}/patients`),
-        fetch(`${API_URL}/stats`),
+        fetch(`${API_URL}/patients`, { headers }), // Envia o header
+        fetch(`${API_URL}/stats`, { headers }),    // Envia o header
       ]);
+
+      // 7. NOVO: Tratamento de erro 401 (Token inválido/expirado)
+      if (patientsResponse.status === 401 || statsResponse.status === 401) {
+        handleAuthError();
+        return;
+      }
 
       if (!patientsResponse.ok || !statsResponse.ok) {
         throw new Error("Falha ao buscar dados do servidor. Verifique se o backend (api.py) está a rodar.");
@@ -130,79 +165,117 @@ export default function Dashboard() {
       setStats(statsData);
       setError(null);
     } catch (err) {
-      if (err instanceof Error) {
+      if (err instanceof Error && err.name !== "AbortError") {
         setError(err.message);
-      } else {
-        setError("Ocorreu um erro desconhecido.");
       }
     } finally {
       setIsLoading(false);
       setIsPolling(false);
     }
-  }, [isPolling]); // Dependência atualizada para isPolling
+  }, [isPolling, token, logout, navigate]); // Adicionado 'token', 'logout', 'navigate'
 
   // Hook para buscar dados periodicamente (polling)
   useEffect(() => {
     fetchData(true); // Busca inicial
     const intervalId = setInterval(() => fetchData(false), 3000); // Atualiza a cada 3 segundos
+    return () => clearInterval(intervalId);
+  }, [fetchData]); // 'fetchData' já contém todas as dependências
 
-    return () => clearInterval(intervalId); // Limpa o intervalo ao desmontar
-  }, [fetchData]); // A dependência [fetchData] está correta
+  // --- Funções do Modal de Diagnóstico ---
 
-  // Função para atender/remover um paciente da fila
-  const handleAttendPatient = async (ticket: string) => {
-    // Remove o paciente da lista localmente para resposta instantânea da UI
-    setPatients((prevPatients) =>
-      prevPatients.filter((p) => p.ticket !== ticket)
-    );
+  const handleOpenModal = (patient: PatientInQueue) => {
+    setCurrentPatient(patient);
+    setFinalDiagnosis("");
+    setModalError(null);
+    setIsModalOpen(true);
+  };
+
+  const handleCloseModal = () => {
+    setIsModalOpen(false);
+    setCurrentPatient(null);
+  };
+
+  // 8. ATUALIZADO: Submissão de diagnóstico (agora envia o token)
+  const handleSubmitDiagnosis = async () => {
+    if (!finalDiagnosis.trim()) {
+      setModalError("O diagnóstico final não pode estar vazio.");
+      return;
+    }
+    if (!currentPatient) return;
+    setModalError(null);
 
     try {
-      const response = await fetch(`${API_URL}/attend/${ticket}`, {
+      const response = await fetch(`${API_URL}/resolve/${currentPatient.ticket}`, {
         method: "POST",
+        // 9. NOVO: Headers de autorização + Content-Type
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ final_diagnosis: finalDiagnosis } as ResolveData),
       });
+
+      // 10. NOVO: Tratamento de erro 401
+      if (response.status === 401) {
+        handleAuthError();
+        return;
+      }
+
       if (!response.ok) {
-        throw new Error("Falha ao atender o paciente. A recarregar a lista...");
+        throw new Error("Falha ao submeter o diagnóstico. Tente novamente.");
       }
-      // Busca os dados completos para garantir a sincronia
-      fetchData(false);
+
+      setPatients((prevPatients) =>
+        prevPatients.filter((p) => p.ticket !== currentPatient.ticket)
+      );
+      handleCloseModal();
+      
     } catch (err) {
-      if (err instanceof Error) {
-        setError(err.message);
-      }
-      // Se falhar, recarrega os dados para reverter a remoção otimista
-      fetchData(false);
+      if (err instanceof Error) setModalError(err.message);
     }
   };
 
-  // A probabilidade (ex: 0.88) deve ser multiplicada por 100.
   const formatSuggestion = (suggestion: DiagnosisSuggestion) => {
     const probabilityPercent = (suggestion.probability * 100).toFixed(0);
     return `${suggestion.disease} (${probabilityPercent}%)`;
   };
 
+  // 11. NOVO: Função de Logout
+  const handleLogout = () => {
+    logout();
+    navigate("/login");
+  };
+
+  // O 'Header' foi removido daqui porque agora está no App.tsx
   return (
     <div className="min-h-screen bg-gradient-subtle text-foreground">
-      <Header />
-
-      <div className="container mx-auto px-6 py-32"> {/* pt-32 para dar espaço ao Header fixo */}
+      {/* O Header é renderizado pelo App.tsx */}
+      <div className="container mx-auto px-6 py-32">
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.5 }}
         >
-          <div className="mb-8 flex flex-wrap justify-between items-center gap-4">
+          {/* 12. ATUALIZADO: Header da página com botão de Logout */}
+          <div className="mb-8 flex flex-wrap justify-between items-start gap-4">
             <div>
               <h1 className="text-4xl font-bold mb-2 text-foreground">Dashboard - Fila de Triagem</h1>
               <p className="text-lg text-muted-foreground">
                 Monitor em tempo real dos pacientes aguardando atendimento
               </p>
             </div>
-            {isPolling && !isLoading && ( // Mostra "Atualizando..." apenas durante o polling
-              <div className="flex items-center gap-2 text-muted-foreground">
-                <Loader2 className="h-5 w-5 animate-spin" />
-                <span>Atualizando...</span>
-              </div>
-            )}
+            <div className="flex gap-4 items-center">
+              {isPolling && !isLoading && (
+                <div className="flex items-center gap-2 text-muted-foreground">
+                  <Loader2 className="h-5 w-5 animate-spin" />
+                  <span>Atualizando...</span>
+                </div>
+              )}
+              <Button variant="outline" onClick={handleLogout} className="gap-2">
+                <LogOut className="h-4 w-4" />
+                Logout
+              </Button>
+            </div>
           </div>
 
           {/* Exibição de Erro da API */}
@@ -218,7 +291,6 @@ export default function Dashboard() {
 
           {/* Stats Cards (Dados Reais) */}
           <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
-            {/* Card: Total na Fila */}
             <Card className="shadow-md">
               <CardHeader className="flex flex-row items-center justify-between pb-2">
                 <CardTitle className="text-sm font-medium text-muted-foreground">
@@ -227,14 +299,13 @@ export default function Dashboard() {
                 <Users className="h-4 w-4 text-muted-foreground" />
               </CardHeader>
               <CardContent>
-                <div className="text-3xl font-bold text-foreground">{stats.total_in_queue}</div>
+                <div className="text-3xl font-bold text-foreground">{isLoading ? <Loader2 className="h-6 w-6 animate-spin" /> : stats.total_in_queue}</div>
                 <p className="text-xs text-muted-foreground mt-1">
-                  +{stats.last_hour_count} na última hora
+                  +{isLoading ? '...' : stats.last_hour_count} na última hora
                 </p>
               </CardContent>
             </Card>
 
-            {/* Card: Emergências */}
             <Card className="shadow-md">
               <CardHeader className="flex flex-row items-center justify-between pb-2">
                 <CardTitle className="text-sm font-medium text-muted-foreground">
@@ -243,14 +314,13 @@ export default function Dashboard() {
                 <AlertCircle className="h-4 w-4 text-destructive" />
               </CardHeader>
               <CardContent>
-                <div className="text-3xl font-bold text-destructive">{stats.emergency_count}</div>
+                <div className="text-3xl font-bold text-destructive">{isLoading ? <Loader2 className="h-6 w-6 animate-spin" /> : stats.emergency_count}</div>
                 <p className="text-xs text-muted-foreground mt-1">
                   Atendimento imediato
                 </p>
               </CardContent>
             </Card>
 
-            {/* Card: Tempo Médio */}
             <Card className="shadow-md">
               <CardHeader className="flex flex-row items-center justify-between pb-2">
                 <CardTitle className="text-sm font-medium text-muted-foreground">
@@ -259,14 +329,13 @@ export default function Dashboard() {
                 <Clock className="h-4 w-4 text-muted-foreground" />
               </CardHeader>
               <CardContent>
-                <div className="text-3xl font-bold text-foreground">{stats.avg_wait_time_minutes.toFixed(0)} min</div>
+                <div className="text-3xl font-bold text-foreground">{isLoading ? <Loader2 className="h-6 w-6 animate-spin" /> : `${stats.avg_wait_time_minutes.toFixed(0)} min`}</div>
                 <p className="text-xs text-muted-foreground mt-1">
                   Média de toda a fila
                 </p>
               </CardContent>
             </Card>
             
-            {/* Card: Status da IA */}
             <Card className="shadow-md">
               <CardHeader className="flex flex-row items-center justify-between pb-2">
                 <CardTitle className="text-sm font-medium text-muted-foreground">
@@ -342,7 +411,7 @@ export default function Dashboard() {
                           {/* Coluna 1: Prioridade e Nome */}
                           <div className="flex-1 min-w-0">
                             <Badge
-                              className={`font-bold px-3 py-1 text-sm ${style.text} ${style.border} ${style.bg.replace('/10', '/20')}`} // Fundo do badge mais forte
+                              className={`font-bold px-3 py-1 text-sm ${style.text} ${style.border} ${style.bg.replace('/10', '/20')}`}
                             >
                               {patient.priority_description}
                             </Badge>
@@ -379,15 +448,15 @@ export default function Dashboard() {
                             </ul>
                           </div>
 
-                          {/* Coluna 4: Botão de Ação */}
+                          {/* Coluna 4: Botão de Ação (Abre o Modal) */}
                           <div className="flex-shrink-0 w-full md:w-auto mt-2 md:mt-0">
                             <Button 
                               variant="default" 
                               className="w-full md:w-auto"
-                              onClick={() => handleAttendPatient(patient.ticket)}
+                              onClick={() => handleOpenModal(patient)} // Abre o modal
                             >
                               <UserCheck className="h-4 w-4 mr-2" />
-                              Atender
+                              Atender e Registrar
                             </Button>
                           </div>
                         </motion.div>
@@ -399,6 +468,87 @@ export default function Dashboard() {
           </Card>
         </motion.div>
       </div>
+
+      {/* --- MODAL DE DIAGNÓSTICO FINAL --- */}
+      <AnimatePresence>
+        {isModalOpen && currentPatient && (
+          <motion.div
+            key="modal-backdrop"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-6"
+            onClick={handleCloseModal} // Fecha ao clicar fora
+          >
+            <motion.div
+              key="modal-content"
+              initial={{ opacity: 0, scale: 0.9, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.9, y: 20 }}
+              transition={{ duration: 0.2 }}
+              className="bg-card w-full max-w-lg rounded-2xl shadow-xl p-8 border border-border"
+              onClick={(e) => e.stopPropagation()} // Impede de fechar ao clicar dentro
+            >
+              {/* Cabeçalho do Modal */}
+              <div className="flex items-center justify-between mb-6">
+                <div>
+                  <h3 className="text-2xl font-bold text-foreground">
+                    Atender Paciente
+                  </h3>
+                  <p className="text-muted-foreground">
+                    {currentPatient.name} (Ticket: {currentPatient.ticket})
+                  </p>
+                </div>
+                <Button variant="ghost" size="icon" onClick={handleCloseModal}>
+                  <X className="h-5 w-5" />
+                </Button>
+              </div>
+
+              {/* Formulário de Diagnóstico */}
+              <div className="space-y-6">
+                {/* Erro do Modal */}
+                {modalError && (
+                  <p className="text-sm text-destructive font-medium">
+                    {modalError}
+                  </p>
+                )}
+                
+                {/* Campo de Input */}
+                <div>
+                  <Label htmlFor="diagnosis" className="text-base font-medium">
+                    Diagnóstico Final (para treino da IA)
+                  </Label>
+                  <Input
+                    id="diagnosis"
+                    value={finalDiagnosis}
+                    onChange={(e) => setFinalDiagnosis(e.target.value)}
+                    placeholder="Ex: Apendicite, Infarto, Enxaqueca..."
+                    className="mt-2 h-12 text-base"
+                    autoFocus
+                  />
+                  <p className="text-xs text-muted-foreground mt-2">
+                    Este dado será usado para treinar o modelo de Machine Learning.
+                  </p> 
+                  {/* CORREÇÃO: A tag </D> foi corrigida para </p> */}
+                </div>
+                
+                {/* Botões de Ação */}
+                <div className="flex justify-end gap-4">
+                  <Button variant="outline" onClick={handleCloseModal}>
+                    Cancelar
+                  </Button>
+                  <Button
+                    variant="default"
+                    onClick={handleSubmitDiagnosis}
+                  >
+                    Confirmar e Remover da Fila
+                  </Button>
+                </div>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

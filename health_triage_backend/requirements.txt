@@ -1,0 +1,8 @@
+fastapi
+uvicorn[standard]
+nltk
+pandas
+scikit-learn
+joblib
+passlib[bcrypt]
+python-jose[cryptography]
